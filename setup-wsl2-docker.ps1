@@ -53,14 +53,37 @@ function Test-WindowsVersion {
         return $false
     }
     
-    Write-ColorOutput "✓ Windows version check passed (Build $build)" "Success"
+    Write-ColorOutput "Windows version check passed (Build $build)" "Success"
     return $true
+}
+
+# Check if system restart is pending
+function Test-PendingRestart {
+    $restartPending = $false
+
+    # Check Component Based Servicing
+    if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") {
+        $restartPending = $true
+    }
+
+    # Check Windows Update
+    if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") {
+        $restartPending = $true
+    }
+
+    # Check pending file rename operations
+    $fileRenameKey = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name "PendingFileRenameOperations" -ErrorAction SilentlyContinue
+    if ($fileRenameKey -and $fileRenameKey.PendingFileRenameOperations) {
+        $restartPending = $true
+    }
+
+    return $restartPending
 }
 
 # Check if WSL is installed
 function Test-WSLInstalled {
     try {
-        $wslStatus = wsl --status 2>&1
+        $null = wsl --status 2>&1
         return $LASTEXITCODE -eq 0
     }
     catch {
@@ -71,16 +94,41 @@ function Test-WSLInstalled {
 # Install or update WSL
 function Install-WSL {
     Write-Header "WSL2 Installation/Update"
-    
+
+    # Check if restart is already pending from previous installation attempt
+    if (Test-PendingRestart) {
+        Write-ColorOutput "System restart is pending from previous installation" "Warning"
+        Write-ColorOutput "WSL installation requires a restart to complete." "Error"
+        Write-ColorOutput "`nPlease restart your computer, then run this script again." "Warning"
+        Write-Host "`nPress any key to exit..."
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        exit 0
+    }
+
     $wslInstalled = Test-WSLInstalled
-    
+
     if (-not $wslInstalled) {
         Write-ColorOutput "WSL not detected. Installing WSL..." "Info"
         Write-ColorOutput "This will require a system restart..." "Warning"
-        
+
         try {
             wsl --install --no-distribution
-            Write-ColorOutput "✓ WSL installation initiated" "Success"
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-ColorOutput "Error: WSL installation command failed" "Error"
+                return $false
+            }
+
+            Write-ColorOutput "WSL installation initiated" "Success"
+
+            # Give Windows a moment to register the pending restart
+            Start-Sleep -Seconds 2
+
+            # Verify restart is now pending
+            if (Test-PendingRestart) {
+                Write-ColorOutput "`nRestart requirement confirmed by system" "Info"
+            }
+
             Write-ColorOutput "`nIMPORTANT: Please restart your computer, then run this script again." "Warning"
             Write-Host "`nPress any key to exit..."
             $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -92,19 +140,19 @@ function Install-WSL {
         }
     }
     else {
-        Write-ColorOutput "✓ WSL is installed" "Success"
-        
+        Write-ColorOutput "WSL is installed" "Success"
+
         # Update WSL
         Write-ColorOutput "Updating WSL to latest version..." "Info"
         try {
             wsl --update
-            Write-ColorOutput "✓ WSL updated successfully" "Success"
+            Write-ColorOutput "WSL updated successfully" "Success"
         }
         catch {
             Write-ColorOutput "Warning: Could not update WSL (may already be latest version)" "Warning"
         }
     }
-    
+
     return $true
 }
 
@@ -113,7 +161,7 @@ function Set-WSL2Default {
     Write-ColorOutput "Setting WSL2 as default version..." "Info"
     try {
         wsl --set-default-version 2
-        Write-ColorOutput "✓ WSL2 set as default" "Success"
+        Write-ColorOutput "WSL2 set as default" "Success"
         return $true
     }
     catch {
@@ -124,8 +172,9 @@ function Set-WSL2Default {
 
 # Check if Ubuntu is installed
 function Test-UbuntuInstalled {
-    $distros = wsl --list --quiet
-    return $distros -match "Ubuntu"
+    $ubuntuDistro = wsl --list --quiet | ForEach-Object { $_.Trim() -replace '\x00','' } | Where-Object { $_ -match "Ubuntu-24.04" } | Select-Object -First 1
+
+    return $ubuntuDistro
 }
 
 # Install Ubuntu
@@ -133,7 +182,7 @@ function Install-Ubuntu {
     Write-Header "Ubuntu Distribution Installation"
     
     if (Test-UbuntuInstalled) {
-        Write-ColorOutput "✓ Ubuntu is already installed" "Success"
+        Write-ColorOutput "Ubuntu is already installed" "Success"
         
         # List installed distributions
         Write-ColorOutput "`nInstalled WSL distributions:" "Info"
@@ -147,15 +196,16 @@ function Install-Ubuntu {
     
     try {
         wsl --install -d Ubuntu-24.04
-        
-        Write-ColorOutput "`n✓ Ubuntu installation initiated" "Success"
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-ColorOutput "Error: Ubuntu installation command failed" "Error"
+            return $false
+        }
+
+        Write-ColorOutput "`nUbuntu installation initiated" "Success"
         Write-ColorOutput "`nUbuntu will now launch for initial setup." "Info"
-        Write-ColorOutput "Please create a username and password when prompted." "Warning"
-        
-        # Wait a moment for installation to complete
-        Start-Sleep -Seconds 3
-        
-        return $true
+        Write-ColorOutput "Please complete the setup (create username and password) in the Ubuntu window." "Warning"
+        Write-ColorOutput "Waiting for installation to complete..." "Info"
     }
     catch {
         Write-ColorOutput "Error installing Ubuntu: $_" "Error"
@@ -166,13 +216,14 @@ function Install-Ubuntu {
 # Set Ubuntu as default distribution
 function Set-UbuntuDefault {
     Write-ColorOutput "`nSetting Ubuntu as default WSL distribution..." "Info"
-    
-    $ubuntuDistro = (wsl --list --quiet | Where-Object { $_ -match "Ubuntu" } | Select-Object -First 1).Trim()
-    
+
+    $ubuntuDistro = wsl --list --quiet | ForEach-Object { $_.Trim() -replace '\x00','' } | Where-Object { $_ -match "Ubuntu-24.04" } | Select-Object -First 1
+
     if ($ubuntuDistro) {
+        $ubuntuDistro = $ubuntuDistro.Trim()
         try {
             wsl --set-default $ubuntuDistro
-            Write-ColorOutput "✓ Ubuntu set as default distribution" "Success"
+            Write-ColorOutput "Ubuntu set as default distribution" "Success"
             return $true
         }
         catch {
@@ -220,17 +271,13 @@ function Main {
     # Final instructions
     Write-Header "Windows Setup Complete!"
     
-    Write-ColorOutput "`n✓ WSL2 is installed and updated" "Success"
-    Write-ColorOutput "✓ Ubuntu is installed and configured" "Success"
+    Write-ColorOutput "`nWSL2 is installed and updated" "Success"
+    Write-ColorOutput "Ubuntu is installed and configured" "Success"
     Write-ColorOutput "`nNext Steps:" "Header"
     Write-ColorOutput "1. Open Ubuntu from the Start Menu or run: wsl" "Info"
-    Write-ColorOutput "2. Download the bash installation script inside Ubuntu:" "Info"
-    Write-ColorOutput "   curl -fsSL https://your-host/install-docker-wsl2.sh -o install-docker-wsl2.sh" "Info"
-    Write-ColorOutput "   (or create the install-docker-wsl2.sh file manually)" "Info"
-    Write-ColorOutput "3. Make it executable: chmod +x install-docker-wsl2.sh" "Info"
-    Write-ColorOutput "4. Run it: ./install-docker-wsl2.sh" "Info"
+    Write-ColorOutput "2. Make the bash script executable: chmod +x install-docker-wsl2.sh" "Info"
+    Write-ColorOutput "3. Run it: ./install-docker-wsl2.sh" "Info"
     
-    Write-ColorOutput "`nAlternatively, copy the bash script content and run it directly in Ubuntu." "Info"
     
     Write-Host "`n"
 }
