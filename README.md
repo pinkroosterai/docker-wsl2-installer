@@ -15,7 +15,7 @@ Complete automation for installing Docker Engine in WSL2 without Docker Desktop.
 2. Run the setup script:
 
 ```powershell
-.\setup-wsl2-docker.ps1
+PowerShell -ExecutionPolicy Bypass -File .\setup-wsl2-docker.ps1
 ```
 
 This will:
