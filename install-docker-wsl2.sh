@@ -365,7 +365,7 @@ main() {
     
     echo -e "${CYAN}2. Restart WSL by opening Ubuntu again${NC}\n"
     
-    echo -e "${CYAN}3. Run the verification script:${NC}"
+    echo -e "${CYAN}3. Run the verification script in your home directory:${NC}"
     echo -e "   ${MAGENTA}~/verify-docker.sh${NC}\n"
     
     echo -e "${YELLOW}The WSL shutdown is required for systemd to start properly.${NC}"
